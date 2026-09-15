@@ -1297,6 +1297,134 @@ class Typesetting:
             total_width += unit.width
         return total_width * scale
 
+    def _find_toc_leader_and_page(
+        self, typesetting_units: list[TypesettingUnit]
+    ) -> dict | None:
+        if not typesetting_units or len(typesetting_units) < 3:
+            return None
+
+        # 1. Skip trailing whitespace/newlines
+        idx = len(typesetting_units) - 1
+        while idx >= 0 and (
+            typesetting_units[idx].is_space
+            or typesetting_units[idx].try_get_unicode() in (" ", "\n")
+        ):
+            idx -= 1
+        if idx < 0:
+            return None
+
+        # 2. Extract page number digits
+        page_end_idx = idx + 1
+        while idx >= 0 and (
+            typesetting_units[idx].try_get_unicode()
+            and typesetting_units[idx].try_get_unicode() in "0123456789"
+        ):
+            idx -= 1
+        page_start_idx = idx + 1
+        if page_start_idx == page_end_idx:
+            return None
+
+        # 3. Skip whitespace between leader dots and page number
+        while idx >= 0 and (
+            typesetting_units[idx].is_space
+            or typesetting_units[idx].try_get_unicode() in (" ",)
+        ):
+            idx -= 1
+
+        # 4. Extract leader dots
+        dots_end_idx = idx + 1
+        while idx >= 0 and (
+            typesetting_units[idx].try_get_unicode()
+            and typesetting_units[idx].try_get_unicode() in (".", "…", "·")
+        ):
+            idx -= 1
+        dots_start_idx = idx + 1
+
+        dot_count = dots_end_idx - dots_start_idx
+        if dot_count >= 2:
+            return {
+                "title_units": typesetting_units[:dots_start_idx],
+                "dot_template": typesetting_units[dots_start_idx],
+                "page_units": typesetting_units[page_start_idx:page_end_idx],
+            }
+        return None
+
+    def _layout_toc_typesetting_units(
+        self,
+        toc_info: dict,
+        box: Box,
+        scale: float,
+        line_skip: float,
+        paragraph: il_version_1.PdfParagraph,
+        use_english_line_break: bool = True,
+    ) -> tuple[list[TypesettingUnit], bool]:
+        title_units = toc_info["title_units"]
+        dot_tmpl = toc_info["dot_template"]
+        page_units = toc_info["page_units"]
+
+        all_units = title_units + page_units + [dot_tmpl]
+        font_sizes = [u.font_size for u in all_units if u.font_size]
+        font_size = statistics.mode(font_sizes) if font_sizes else 10.0
+
+        unit_heights = [u.height for u in all_units if u.height]
+        avg_height = (statistics.mode(unit_heights) if unit_heights else 10.0) * scale
+
+        page_total_width = sum(u.width * scale for u in page_units)
+        page_start_x = box.x2 - page_total_width
+
+        typeset_units = []
+        fit = True
+        if title_units:
+            title_ts_units, title_fit = self._layout_typesetting_units(
+                title_units,
+                box,
+                scale,
+                line_skip,
+                paragraph,
+                use_english_line_break,
+            )
+            if not title_ts_units:
+                return [], False
+            typeset_units.extend(title_ts_units)
+            fit = title_fit
+
+            last_unit = title_ts_units[-1]
+            title_end_x = last_unit.box.x2
+            current_y = last_unit.box.y
+
+            if title_end_x + 15.0 > page_start_x:
+                current_y -= max(
+                    font_size * scale * line_skip,
+                    avg_height * line_skip,
+                )
+                title_end_x = box.x
+                if current_y < box.y:
+                    fit = False
+        else:
+            current_y = box.y2 - avg_height
+            title_end_x = box.x
+
+        # Fill leader dots between title_end_x and page_start_x
+        dot_width = dot_tmpl.width * scale
+        step = max(dot_width * 2.2, 6.0)
+        dot_x = title_end_x + step
+        while dot_x + dot_width <= page_start_x - 3.0:
+            relocated_dot = dot_tmpl.relocate(dot_x, current_y, scale)
+            typeset_units.append(relocated_dot)
+            dot_x += step
+
+        # Place page number units aligned with the right boundary
+        curr_page_x = page_start_x
+        for u in page_units:
+            relocated_page = u.relocate(curr_page_x, current_y, scale)
+            typeset_units.append(relocated_page)
+            curr_page_x = relocated_page.box.x2
+
+        if current_y < box.y:
+            fit = False
+
+        return typeset_units, fit
+
     def _layout_typesetting_units(
         self,
         typesetting_units: list[TypesettingUnit],
@@ -1316,6 +1444,18 @@ class Typesetting:
         Returns:
             tuple[list[TypesettingUnit], bool]: (已布局的排版单元列表，是否所有单元都放得下)
         """
+        # Check if this paragraph is a TOC entry with leader dots and page number
+        toc_info = self._find_toc_leader_and_page(typesetting_units)
+        if toc_info:
+            return self._layout_toc_typesetting_units(
+                toc_info,
+                box,
+                scale,
+                line_skip,
+                paragraph,
+                use_english_line_break,
+            )
+
         # 计算字号众数
         font_sizes = []
         for unit in typesetting_units:

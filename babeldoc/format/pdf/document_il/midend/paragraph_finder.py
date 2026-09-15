@@ -48,6 +48,27 @@ def generate_base58_id(length: int = 5) -> str:
     return "".join(random.choice(BASE58_ALPHABET) for _ in range(length))
 
 
+KEY_PATTERN = re.compile(
+    r"^\s*(?!https?://)[A-Za-z0-9_\u4e00-\u9fa5\s\(\)/#-]{1,35}\s*[:：]"
+)
+PUNCT_END = (
+    ".",
+    "!",
+    "?",
+    "。",
+    "！",
+    "？",
+    ":",
+    "：",
+    ";",
+    "；",
+    "</p>",
+    "<br>",
+    "</div>",
+    "[/code]",
+)
+
+
 class ParagraphFinder:
     stage_name = "Parse Paragraphs"
 
@@ -286,6 +307,9 @@ class ParagraphFinder:
         # 第五步：处理独立段落
         self.process_independent_paragraphs(paragraphs, median_width)
 
+        # 新增后处理：合并同一行上的目录/编号碎片段落
+        self.merge_same_line_toc_paragraphs(paragraphs)
+
         # 新增后处理：合并带行号交替的正文段落（a 正文、b 行号、c 正文 -> 合并 a 与 c，保留 b）
         if getattr(self.translation_config, "merge_alternating_line_numbers", True):
             self.merge_alternating_line_number_paragraphs(paragraphs)
@@ -416,6 +440,109 @@ class ParagraphFinder:
                     # 不移动 i，继续尝试把更多正文接到 a，实现 a l+ a l+ a ... 链式合并
                     continue
             i += 1
+
+    def merge_same_line_toc_paragraphs(self, paragraphs: list[PdfParagraph]):
+        """Merge horizontally adjacent paragraph fragments on the same baseline/line,
+        such as section numbers (e.g. '1.', '2.'), titles, leader dots, and orphan page numbers.
+        """
+        if not paragraphs or len(paragraphs) < 2:
+            return
+
+        def _get_clean_text(p: PdfParagraph) -> str:
+            txt = p.unicode if p.unicode else self._paragraph_text_ascii(p)
+            return (txt or "").strip().replace("\n", " ")
+
+        def _is_section_number(txt: str) -> bool:
+            return bool(
+                re.match(
+                    r"^\s*(\d+(\.\d+)*\.?|[A-Za-z]\.|\([0-9a-zA-Z]+\))\s*$",
+                    txt,
+                )
+            )
+
+        def _is_page_number(txt: str) -> bool:
+            return bool(re.match(r"^\s*(\.\s*)?\d{1,4}\s*$", txt))
+
+        def _has_leader_dots(txt: str) -> bool:
+            return bool(re.search(r"(?:[\. …·]\s*){3,}", txt))
+
+        changed = True
+        while changed:
+            changed = False
+            for i in range(len(paragraphs)):
+                p1 = paragraphs[i]
+                if not p1.box:
+                    continue
+                t1 = _get_clean_text(p1)
+
+                for j in range(i + 1, len(paragraphs)):
+                    p2 = paragraphs[j]
+                    if not p2.box:
+                        continue
+                    t2 = _get_clean_text(p2)
+
+                    # Check vertical overlap
+                    v_overlap = min(p1.box.y2, p2.box.y2) - max(p1.box.y, p2.box.y)
+                    min_h = min(p1.box.y2 - p1.box.y, p2.box.y2 - p2.box.y)
+                    if min_h <= 0 or (v_overlap / min_h) < 0.5:
+                        continue
+
+                    # Determine left and right
+                    if p1.box.x <= p2.box.x:
+                        left_p, right_p, left_t, right_t = p1, p2, t1, t2
+                        del_idx = j
+                    else:
+                        left_p, right_p, left_t, right_t = p2, p1, t2, t1
+                        del_idx = i
+
+                    h_gap = right_p.box.x - left_p.box.x2
+                    if h_gap < -5.0 or h_gap > 80.0:
+                        continue
+
+                    should_merge = False
+                    # 1. Left is section number and close to right title/text
+                    if _is_section_number(left_t) and h_gap <= 60.0:
+                        should_merge = True
+                    # 2. Right is page number and left has dots or is near right margin
+                    elif _is_page_number(right_t) and (
+                        _has_leader_dots(left_t) or right_p.box.x2 >= 450.0
+                    ):
+                        should_merge = True
+                    # 3. Dots continuation
+                    elif _has_leader_dots(left_t) and (
+                        _has_leader_dots(right_t) or _is_page_number(right_t)
+                    ):
+                        should_merge = True
+                    # 4. Small gap split across box boundary where one has dots or section number
+                    elif h_gap < 15.0 and (
+                        _has_leader_dots(left_t)
+                        or _has_leader_dots(right_t)
+                        or _is_section_number(left_t)
+                    ):
+                        should_merge = True
+
+                    if should_merge:
+                        # If both have single lines, merge characters into one line
+                        if (
+                            len(left_p.pdf_paragraph_composition) == 1
+                            and left_p.pdf_paragraph_composition[0].pdf_line
+                            and len(right_p.pdf_paragraph_composition) == 1
+                            and right_p.pdf_paragraph_composition[0].pdf_line
+                        ):
+                            left_line = left_p.pdf_paragraph_composition[0].pdf_line
+                            right_line = right_p.pdf_paragraph_composition[0].pdf_line
+                            left_line.pdf_character.extend(right_line.pdf_character)
+                            self.update_line_data(left_line)
+                        else:
+                            left_p.pdf_paragraph_composition.extend(
+                                right_p.pdf_paragraph_composition
+                            )
+                        self.update_paragraph_data(left_p, update_unicode=True)
+                        del paragraphs[del_idx]
+                        changed = True
+                        break
+                if changed:
+                    break
 
     def _group_characters_into_paragraphs(
         self, page: Page, layout_index, layout_map
@@ -688,8 +815,17 @@ class ParagraphFinder:
             self.update_paragraph_data(paragraph)
             return
 
-        para_y_min = min(b["y1"] for b in char_y_bounds)
-        para_y_max = max(b["y2"] for b in char_y_bounds)
+        # Filter visible characters for detecting vertical line gaps.
+        # Space characters often have tall bounding boxes that span across line gaps,
+        # preventing true line gaps from being detected.
+        visible_bounds = [
+            b for b in char_y_bounds if not b["char"].char_unicode.isspace()
+        ]
+        if not visible_bounds:
+            visible_bounds = char_y_bounds
+
+        para_y_min = min(b["y1"] for b in visible_bounds)
+        para_y_max = max(b["y2"] for b in visible_bounds)
 
         # If the paragraph is vertically flat, treat it as a single line.
         if (para_y_max - para_y_min) < 5:  # Using a small threshold
@@ -702,16 +838,16 @@ class ParagraphFinder:
             return
 
         # 3. Perform "threading" scan to create a collision histogram.
-        # Scan from top (max y) to bottom (min y) with a step of 0.5.
+        # Scan from top (max y) to bottom (min y) with a step of 0.25.
         scan_y_min = para_y_min
         scan_y_max = para_y_max
         step = 0.25
 
         y_coordinates = np.arange(scan_y_max, scan_y_min, -step)
 
-        # Compute collision counts using NumPy histogram (O(m + n))
-        y1_arr = np.array([b["y1"] for b in char_y_bounds], dtype=np.float32)
-        y2_arr = np.array([b["y2"] for b in char_y_bounds], dtype=np.float32)
+        # Compute collision counts using NumPy histogram (O(m + n)) on visible characters
+        y1_arr = np.array([b["y1"] for b in visible_bounds], dtype=np.float32)
+        y2_arr = np.array([b["y2"] for b in visible_bounds], dtype=np.float32)
         collision_counts = self._compute_collision_counts_histogram(
             y1_arr,
             y2_arr,
@@ -850,6 +986,8 @@ class ParagraphFinder:
                 i += 1
                 continue
 
+            p_w = (paragraph.box.x2 - paragraph.box.x) if paragraph.box else 0.0
+
             j = 1
             while j < len(paragraph.pdf_paragraph_composition):
                 prev_composition = paragraph.pdf_paragraph_composition[j - 1]
@@ -861,45 +999,59 @@ class ParagraphFinder:
                 prev_width = prev_line.box.x2 - prev_line.box.x
                 prev_text = "".join([c.char_unicode for c in prev_line.pdf_character])
 
-                # 检查是否包含连续的点（至少 20 个）
-                # 如果有至少连续 20 个点，则代表这是目录条目
-                if re.search(r"\.{20,}", prev_text):
-                    # 创建新的段落
-                    new_paragraph = PdfParagraph(
-                        box=Box(0, 0, 0, 0),  # 临时边界框
-                        pdf_paragraph_composition=(
-                            paragraph.pdf_paragraph_composition[j:]
-                        ),
-                        unicode="",
-                        debug_id=generate_base58_id(),
-                        layout_label=paragraph.layout_label,
-                        layout_id=paragraph.layout_id,
-                    )
-                    # 更新原段落
-                    paragraph.pdf_paragraph_composition = (
-                        paragraph.pdf_paragraph_composition[:j]
-                    )
+                current_composition = paragraph.pdf_paragraph_composition[j]
+                if not current_composition.pdf_line:
+                    j += 1
+                    continue
 
-                    # 更新两个段落的数据
-                    self.update_paragraph_data(paragraph)
-                    self.update_paragraph_data(new_paragraph)
+                current_line = current_composition.pdf_line
+                current_text = "".join(
+                    [c.char_unicode for c in current_line.pdf_character]
+                )
 
-                    # 在原段落后插入新段落
-                    paragraphs.insert(i + 1, new_paragraph)
-                    break
+                # 1. 检查是否包含连续的点（至少 20 个）或结尾为页码（目录条目）
+                is_toc = bool(
+                    re.search(r"\.{20,}", prev_text)
+                    or re.search(r"(?:\(?\b\d{1,4}\b\)?)\s*$", prev_text)
+                )
 
-                # 如果前一行宽度小于中位数的一半，将当前行及后续行分割成新段落
-                if (
+                # 2. 如果前一行宽度小于中位数的一半（且开启了短行分割配置）
+                is_short_line = bool(
                     self.translation_config.split_short_lines
                     and prev_width
                     < median_width * self.translation_config.short_line_split_factor
-                ) or (
-                    paragraph.pdf_paragraph_composition
-                    and (current_line := paragraph.pdf_paragraph_composition[j])
-                    and (line := current_line.pdf_line)
-                    and (chars := line.pdf_character)
-                    and (char := chars[0])
-                    and is_bullet_point(char)
+                )
+
+                # 3. 项目符号列表项（检测行内首个非空白字符是否为列表项符号）
+                chars = current_line.pdf_character
+                non_space_chars = [c for c in chars if not c.char_unicode.isspace()]
+                is_bullet = bool(non_space_chars and is_bullet_point(non_space_chars[0]))
+
+                # 4. 表单结构化键值对（Key: Value / 字段名称: 字段值）
+                gap = (
+                    (paragraph.box.x2 - prev_line.box.x2) if paragraph.box else 0.0
+                )
+                is_key_value = bool(
+                    KEY_PATTERN.match(current_text)
+                    and (
+                        KEY_PATTERN.match(prev_text)
+                        or gap > 20.0
+                        or prev_text.rstrip().endswith((": ", ":", "："))
+                    )
+                )
+
+                # 5. 显式硬回车断行（上一行以句末标点或标签结束，且右侧存在显著未占满空白）
+                is_hard_return = False
+                if p_w > 60.0 and gap > max(40.0, p_w * 0.25):
+                    if prev_text.rstrip().endswith(PUNCT_END):
+                        is_hard_return = True
+
+                if (
+                    is_toc
+                    or is_short_line
+                    or is_bullet
+                    or is_key_value
+                    or is_hard_return
                 ):
                     # 创建新的段落
                     new_paragraph = PdfParagraph(

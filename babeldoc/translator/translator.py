@@ -262,6 +262,33 @@ class OpenAITranslator(BaseTranslator):
         self.completion_token_count = AtomicInteger()
         self.cache_hit_prompt_token_count = AtomicInteger()
 
+    @property
+    def is_riva_model(self) -> bool:
+        return "riva" in (self.model or "").lower()
+
+    def get_riva_lang_pair(self) -> str:
+        s = (self.lang_in or "en").lower()
+        t = (self.lang_out or "zh").lower()
+        if s in ("auto", "en", "english"):
+            s_code = "en"
+        elif s in ("zh", "zh-cn", "chinese", "simplified chinese"):
+            s_code = "zh-cn"
+        elif s in ("zh-tw", "zh-hk", "traditional chinese"):
+            s_code = "zh-tw"
+        else:
+            s_code = s
+
+        if t in ("zh", "zh-cn", "chinese", "simplified chinese"):
+            t_code = "zh-cn"
+        elif t in ("zh-tw", "zh-hk", "traditional chinese"):
+            t_code = "zh-tw"
+        elif t in ("en", "english"):
+            t_code = "en"
+        else:
+            t_code = t
+
+        return f"{s_code}-{t_code}"
+
     @retry(
         retry=retry_if_exception_type(openai.RateLimitError),
         stop=stop_after_attempt(100),
@@ -269,6 +296,8 @@ class OpenAITranslator(BaseTranslator):
         before_sleep=before_sleep_log(logger, logging.WARNING),
     )
     def do_translate(self, text, rate_limit_params: dict = None) -> str:
+        if not text or not text.strip():
+            return text or ""
         options = {}
         if self.send_temperature:
             options.update(self.options)
@@ -283,6 +312,17 @@ class OpenAITranslator(BaseTranslator):
         return response.choices[0].message.content.strip()
 
     def prompt(self, text):
+        if self.is_riva_model:
+            return [
+                {
+                    "role": "system",
+                    "content": self.get_riva_lang_pair(),
+                },
+                {
+                    "role": "user",
+                    "content": text,
+                },
+            ]
         return [
             {
                 "role": "system",
@@ -301,6 +341,10 @@ class OpenAITranslator(BaseTranslator):
         before_sleep=before_sleep_log(logger, logging.WARNING),
     )
     def do_llm_translate(self, text, rate_limit_params: dict = None):
+        if self.is_riva_model:
+            raise NotImplementedError(
+                "Riva NMT models use direct paragraph translation instead of LLM JSON mode."
+            )
         if text is None:
             return None
 

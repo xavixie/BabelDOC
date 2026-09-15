@@ -1,6 +1,7 @@
 import argparse
 import json
 import logging
+import re
 from collections import defaultdict
 from pathlib import Path
 
@@ -264,8 +265,16 @@ def _cluster_by_axis(chars: list[tuple[il_version_1.Box, str, bool]], orientatio
         if len(band) < 1:
             continue
 
-        main_axis_sizes = [get_main_size(c) for c in band if get_main_size(c) > 0]
-        avg_main_size = np.mean(main_axis_sizes) if main_axis_sizes else 10
+        filtered_sizes = [
+            get_main_size(c)
+            for c in band
+            if get_main_size(c) > 0 and c[1] not in (".", "…", "·", "_", "-", " ")
+        ]
+        if filtered_sizes:
+            avg_main_size = np.mean(filtered_sizes)
+        else:
+            main_axis_sizes = [get_main_size(c) for c in band if get_main_size(c) > 0]
+            avg_main_size = np.mean(main_axis_sizes) if main_axis_sizes else 10
 
         # Epsilon for main-axis clustering is twice the average character size in that dimension
         eps = avg_main_size * LINE_CLUSTERING_EPS_MULTIPLIER
@@ -474,25 +483,50 @@ def _merge_lines_on_page(page_lines: list[Line]) -> list[Line]:
                             0,
                             min(bbox1[3], bbox2[3]) - max(bbox1[1], bbox2[1]),
                         )
-                        if (
-                            v_overlap / height1
-                        ) > MERGE_ADJACENCY_OVERLAP_THRESHOLD and (
-                            v_overlap / height2
-                        ) > MERGE_ADJACENCY_OVERLAP_THRESHOLD:
+                        min_height = min(height1, height2)
+                        if (v_overlap / min_height) > 0.55:
                             h_gap = max(bbox1[0], bbox2[0]) - min(bbox1[2], bbox2[2])
                             if h_gap >= 0:
-                                avg_char_width = np.mean(
-                                    [
-                                        c[0].x2 - c[0].x
-                                        for c in (line1.chars + line2.chars)
-                                        if c[0].x2 > c[0].x
-                                    ]
-                                    or [0]
+                                filtered_widths = [
+                                    c[0].x2 - c[0].x
+                                    for c in (line1.chars + line2.chars)
+                                    if c[0].x2 > c[0].x
+                                    and c[1] not in (".", "…", "·", "_", "-", " ")
+                                ]
+                                avg_char_width = (
+                                    np.mean(filtered_widths)
+                                    if filtered_widths
+                                    else np.mean(
+                                        [
+                                            c[0].x2 - c[0].x
+                                            for c in (line1.chars + line2.chars)
+                                            if c[0].x2 > c[0].x
+                                        ]
+                                        or [0]
+                                    )
+                                )
+                                is_sec = bool(
+                                    re.match(
+                                        r"^\s*(\d+(\.\d+)*\.?|[A-Za-z]\.|\([0-9a-zA-Z]+\))\s*$",
+                                        line1.text.strip(),
+                                    )
+                                    or re.match(
+                                        r"^\s*(\d+(\.\d+)*\.?|[A-Za-z]\.|\([0-9a-zA-Z]+\))\s*$",
+                                        line2.text.strip(),
+                                    )
+                                )
+                                has_dot = bool(
+                                    re.search(r"(?:[\. …·]\s*){3,}", line1.text)
+                                    or re.search(r"(?:[\. …·]\s*){3,}", line2.text)
+                                )
+                                max_gap = (
+                                    max(avg_char_width * 5.0, 45.0)
+                                    if (is_sec or has_dot)
+                                    else (avg_char_width * MERGE_ADJACENCY_GAP_MULTIPLIER)
                                 )
                                 if (
                                     avg_char_width > 0
-                                    and h_gap
-                                    < avg_char_width * MERGE_ADJACENCY_GAP_MULTIPLIER
+                                    and h_gap < max_gap
                                 ):
                                     # logger.debug(
                                     #     f"Merging adjacent lines '{line1.text}' and '{line2.text}'"

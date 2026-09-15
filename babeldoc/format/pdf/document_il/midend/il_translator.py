@@ -1236,11 +1236,23 @@ class ILTranslator:
                 )
                 if text is None:
                     return
-                llm_translate_tracker = tracker.new_llm_translate_tracker()
+                toc_match = re.match(
+                    r"^(?P<prefix>.*?)(?P<dots>(?:[\. …·]\s*){3,})\s*(?P<page>\d{1,4})\s*$",
+                    text,
+                    re.DOTALL,
+                )
+                if toc_match:
+                    toc_prefix = toc_match.group("prefix").strip()
+                    toc_dots = toc_match.group("dots")
+                    toc_page = toc_match.group("page")
+                    text_to_translate = toc_prefix if toc_prefix else text
+                else:
+                    text_to_translate = text
+
                 # Perform translation
                 if self.support_llm_translate:
                     llm_prompt = self.generate_prompt_for_llm(
-                        text,
+                        text_to_translate,
                         title_paragraph,
                         local_title_paragraph,
                         translate_input,
@@ -1255,12 +1267,16 @@ class ILTranslator:
                     llm_translate_tracker.set_output(translated_text)
                 else:
                     translated_text = self.translate_engine.translate(
-                        text,
+                        text_to_translate,
                         rate_limit_params={
                             "paragraph_token_count": paragraph_token_count
                         },
                     )
-                translated_text = re.sub(r"[. 。…，]{20,}", ".", translated_text)
+
+                if toc_match:
+                    translated_text = f"{translated_text.strip()} {toc_dots} {toc_page}"
+                else:
+                    translated_text = re.sub(r"[. 。…，]{20,}", ".", translated_text)
 
                 # Post-translation processing
                 self.post_translate_paragraph(

@@ -750,8 +750,18 @@ class ILTranslatorLLMOnly:
                         logger.warning(f"Invalid id {id_}, skipping")
                         continue
 
-                    # Clean up any excessive punctuation in the translated text
-                    translated_text = re.sub(r"[. 。…，]{20,}", ".", output)
+                    # Clean up any excessive punctuation in the translated text (except for TOC leader dots)
+                    is_toc_output = bool(
+                        re.match(
+                            r"^(?P<prefix>.*?)(?P<dots>(?:[\. …·]\s*){3,})\s*(?P<page>\d{1,4})\s*$",
+                            output,
+                            re.DOTALL,
+                        )
+                    )
+                    if is_toc_output:
+                        translated_text = output
+                    else:
+                        translated_text = re.sub(r"[. 。…，]{20,}", ".", output)
 
                     # Get the original input for this translation
                     translate_input = inputs[id_][1]
@@ -760,7 +770,17 @@ class ILTranslatorLLMOnly:
                     input_unicode = inputs[id_][0]
                     output_unicode = translated_text
 
-                    trimed_input = re.sub(r"[. 。…，]{20,}", ".", input_unicode)
+                    is_toc_input = bool(
+                        re.match(
+                            r"^(?P<prefix>.*?)(?P<dots>(?:[\. …·]\s*){3,})\s*(?P<page>\d{1,4})\s*$",
+                            input_unicode,
+                            re.DOTALL,
+                        )
+                    )
+                    if is_toc_input:
+                        trimed_input = input_unicode
+                    else:
+                        trimed_input = re.sub(r"[. 。…，]{20,}", ".", input_unicode)
 
                     input_token_count = self.calc_token_count(trimed_input)
                     output_token_count = self.calc_token_count(output_unicode)
