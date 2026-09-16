@@ -933,6 +933,28 @@ class Typesetting:
                     and paragraph.optimal_scale > mode_scale
                 ):
                     paragraph.optimal_scale = mode_scale
+
+            # 同一页面内相同 layout_id 的段落（如列表项、同一文本框块）统一缩放因子，保持视觉字号一致
+            for page in document.page:
+                layout_paras: dict[int, list[il_version_1.PdfParagraph]] = {}
+                for paragraph in page.pdf_paragraph:
+                    if paragraph.layout_id is not None:
+                        layout_paras.setdefault(paragraph.layout_id, []).append(paragraph)
+
+                for layout_id, group in layout_paras.items():
+                    if len(group) > 1:
+                        valid_scales = [
+                            p.optimal_scale
+                            for p in group
+                            if p.optimal_scale is not None
+                        ]
+                        if valid_scales:
+                            unified_scale = min(valid_scales)
+                            for p in group:
+                                p.optimal_scale = unified_scale
+                            logger.debug(
+                                f"Page {page.page_number}: unified scale for layout_id {layout_id} ({len(group)} paras) -> {unified_scale:.2f}"
+                            )
         else:
             logger.error(
                 "document_scales is empty, there seems no paragraph in this PDF"
@@ -1032,8 +1054,9 @@ class Typesetting:
                         pass
                     expand_space_flag = 1
 
-                    # 只有成功扩展空间时才 continue，否则继续减小 scale
+                    # 成功扩展空间后重置 scale 为 initial_scale，重新探测最大可用字号
                     if space_expanded:
+                        scale = initial_scale
                         continue
 
                 elif expand_space_flag == 1:
@@ -1051,15 +1074,10 @@ class Typesetting:
                         pass
                     expand_space_flag = 2
 
-                    # 只有成功扩展空间时才 continue，否则继续减小 scale
+                    # 成功扩展空间后重置 scale 为 initial_scale，重新探测最大可用字号
                     if space_expanded:
+                        scale = initial_scale
                         continue
-
-                # 只有在扩展尝试阶段 (expand_space_flag < 2) 且扩展失败时才重置 scale
-                # 当 expand_space_flag >= 2 时，说明已经尝试过所有扩展，应该继续正常的 scale 减小
-                if expand_space_flag < 2:
-                    # 如果无法扩展空间，重置 scale 并继续循环
-                    scale = 1.0
 
         # 如果仍然放不下，尝试去除英文换行限制
         if use_english_line_break:
