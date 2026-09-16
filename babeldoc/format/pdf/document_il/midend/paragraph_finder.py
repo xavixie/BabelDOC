@@ -340,6 +340,7 @@ class ParagraphFinder:
         """
         for paragraph in page.pdf_paragraph:
             min_render_order = 9999999999999999
+            max_render_order = -1
 
             # 遍历段落的所有组成部分
             for composition in paragraph.pdf_paragraph_composition:
@@ -351,12 +352,14 @@ class ParagraphFinder:
                             and char.render_order is not None
                         ):
                             min_render_order = min(min_render_order, char.render_order)
+                            max_render_order = max(max_render_order, char.render_order)
 
                 # 检查单个字符
                 elif composition.pdf_character:
                     char = composition.pdf_character
                     if hasattr(char, "render_order") and char.render_order is not None:
                         min_render_order = min(min_render_order, char.render_order)
+                        max_render_order = max(max_render_order, char.render_order)
 
                 # 检查公式中的字符
                 elif composition.pdf_formula:
@@ -366,10 +369,12 @@ class ParagraphFinder:
                             and char.render_order is not None
                         ):
                             min_render_order = min(min_render_order, char.render_order)
+                            max_render_order = max(max_render_order, char.render_order)
 
-            # 如果找到了有效的 renderorder，设置段落的 renderorder
-            if min_render_order != 9999999999999999:
-                paragraph.render_order = min_render_order
+            # 如果找到了有效的 renderorder，设置段落的 renderorder 为段落内字符的最大 render_order
+            # 确保段落翻译重排后的字符位于其原位置各行底层背景图形（如白色高亮/底色矩形）之上
+            if max_render_order != -1:
+                paragraph.render_order = max_render_order
 
     def is_isolated_formula(self, char: PdfCharacter):
         return char.char_unicode in (

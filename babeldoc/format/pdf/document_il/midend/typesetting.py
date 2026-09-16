@@ -1822,7 +1822,7 @@ class Typesetting:
     def _update_paragraph_render_order(self, paragraph: il_version_1.PdfParagraph):
         """
         重新设置段落各字符的 render order
-        主 render order 等于 paragraph 的 renderorder，sub render order 从 1 开始自增
+        主 render order 等于 paragraph 的 render_order（由 ParagraphFinder 设置为段落字符的最大 render_order，保证位于原段落各行底层背景图形之上），sub render order 从 1 开始自增
         """
         if not hasattr(paragraph, "render_order") or paragraph.render_order is None:
             return
@@ -1838,3 +1838,9 @@ class Typesetting:
                 char.render_order = main_render_order
                 char.sub_render_order = sub_render_order
                 sub_render_order += 1
+            # 检查公式中的字符
+            elif composition.pdf_formula:
+                for char in composition.pdf_formula.pdf_character:
+                    char.render_order = main_render_order
+                    char.sub_render_order = sub_render_order
+                    sub_render_order += 1
