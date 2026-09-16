@@ -28,6 +28,7 @@ from babeldoc.format.pdf.document_il.utils.layout_helper import calculate_iou_fo
 from babeldoc.format.pdf.document_il.utils.layout_helper import get_char_unicode_string
 from babeldoc.format.pdf.document_il.utils.layout_helper import get_character_layout
 from babeldoc.format.pdf.document_il.utils.layout_helper import is_bullet_point
+from babeldoc.format.pdf.document_il.utils.layout_helper import is_list_item_start
 from babeldoc.format.pdf.document_il.utils.layout_helper import (
     is_character_in_formula_layout,
 )
@@ -1022,10 +1023,13 @@ class ParagraphFinder:
                     < median_width * self.translation_config.short_line_split_factor
                 )
 
-                # 3. 项目符号列表项（检测行内首个非空白字符是否为列表项符号）
+                # 3. 项目符号与列表项（检测行内首个非空白字符是否为列表项符号，或整行是否以列表项标记开头）
                 chars = current_line.pdf_character
                 non_space_chars = [c for c in chars if not c.char_unicode.isspace()]
-                is_bullet = bool(non_space_chars and is_bullet_point(non_space_chars[0]))
+                is_bullet = bool(
+                    (non_space_chars and is_bullet_point(non_space_chars[0]))
+                    or is_list_item_start(current_text)
+                )
 
                 # 4. 表单结构化键值对（Key: Value / 字段名称: 字段值）
                 gap = (

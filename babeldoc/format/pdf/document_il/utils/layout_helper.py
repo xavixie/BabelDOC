@@ -65,6 +65,24 @@ def is_bullet_point(char: PdfCharacter) -> bool:
     return is_bullet
 
 
+LIST_ITEM_PREFIX_PATTERN = re.compile(
+    r"^\s*("
+    r"[■•⚫⬤◆◇○●◦‣⁃▪▫∗†‡¶※⁑⁂⁕⁎⁜❧☙⁋‖‽·]"
+    r"|[o\-\*\+\~>]\s+"
+    r"|(?:\d{1,3}(?:\.\d{1,3})*|[a-zA-Z]|[ivxIVX]{1,4})[.)、）]\s+"
+    r"|[（\(](?:\d{1,3}|[a-zA-Z]|[ivxIVX]{1,4}|[一二三四五六七八九十]{1,3})[）\)]\s*"
+    r"|\[(?:\d{1,3}|[a-zA-Z]|[ivxIVX]{1,4})\]\s*"
+    r"|[一二三四五六七八九十]{1,3}[、.]\s*"
+    r")"
+)
+
+
+def is_list_item_start(text: str) -> bool:
+    """Check if the line text starts with a bullet point or list item marker."""
+    return bool(LIST_ITEM_PREFIX_PATTERN.match(text))
+
+
+
 def calculate_box_iou(box1: Box, box2: Box) -> float:
     """Calculate the Intersection over Union (IOU) between two boxes.
 
