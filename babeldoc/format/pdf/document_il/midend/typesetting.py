@@ -866,6 +866,7 @@ class Typesetting:
         """预处理文档，获取每个段落的最优缩放因子，不执行实际排版"""
         all_scales: list[float] = []
         all_paragraphs: list[il_version_1.PdfParagraph] = []
+        dominant_font_sizes: dict[int, float] = {}
 
         for page in document.page:
             pbar.advance()
@@ -898,6 +899,15 @@ class Typesetting:
                     for unit in typesetting_units:
                         if unit.formular:
                             unit_count += len(unit.formular.pdf_character) - 1
+
+                    # 记录段落的主字体大小
+                    char_sizes = [
+                        u.font_size
+                        for u in typesetting_units
+                        if getattr(u, "font_size", None)
+                    ]
+                    if char_sizes:
+                        dominant_font_sizes[id(paragraph)] = statistics.mode(char_sizes)
 
                     # 如果所有单元都可以直接传递，则 scale = 1.0
                     if all(unit.can_passthrough for unit in typesetting_units):
@@ -954,6 +964,58 @@ class Typesetting:
                                 p.optimal_scale = unified_scale
                             logger.debug(
                                 f"Page {page.page_number}: unified scale for layout_id {layout_id} ({len(group)} paras) -> {unified_scale:.2f}"
+                            )
+
+                # 扩展：同一页面内同栏、主字号相同的连续正文段落统一缩放因子，避免同页正文字号反差
+                body_paras = [
+                    p
+                    for p in page.pdf_paragraph
+                    if p.box
+                    and p.optimal_scale is not None
+                    and id(p) in dominant_font_sizes
+                    and (
+                        p.layout_label in ("plain text", "text", "list", None)
+                        or not p.layout_label
+                    )
+                ]
+                body_paras.sort(key=lambda p: p.box.y2, reverse=True)
+
+                flow_groups: list[list[il_version_1.PdfParagraph]] = []
+                for p in body_paras:
+                    p_size = dominant_font_sizes[id(p)]
+                    matched_group = None
+                    for g in flow_groups:
+                        prev_p = g[-1]
+                        prev_size = dominant_font_sizes[id(prev_p)]
+                        same_size = abs(p_size - prev_size) <= 0.5
+                        h_overlap = min(p.box.x2, prev_p.box.x2) - max(
+                            p.box.x, prev_p.box.x
+                        )
+                        min_w = min(p.box.x2 - p.box.x, prev_p.box.x2 - prev_p.box.x)
+                        same_column = min_w > 0 and (h_overlap / min_w > 0.6)
+                        v_gap = prev_p.box.y - p.box.y2
+                        reasonable_v_gap = -10 <= v_gap <= 50
+
+                        if same_size and same_column and reasonable_v_gap:
+                            matched_group = g
+                            break
+
+                    if matched_group is not None:
+                        matched_group.append(p)
+                    else:
+                        flow_groups.append([p])
+
+                for g in flow_groups:
+                    if len(g) > 1:
+                        valid_scales = [
+                            p.optimal_scale for p in g if p.optimal_scale is not None
+                        ]
+                        if valid_scales:
+                            unified_scale = min(valid_scales)
+                            for p in g:
+                                p.optimal_scale = unified_scale
+                            logger.debug(
+                                f"Page {page.page_number}: harmonized scale for {len(g)} body paras with font_size {dominant_font_sizes[id(g[0])]:.1f} -> {unified_scale:.2f}"
                             )
         else:
             logger.error(
@@ -1810,12 +1872,51 @@ class Typesetting:
                 char.box.x >= current_box.x2 or char.box.x2 <= current_box.x
             ):
                 min_y = max(min_y, char.box.y2)
-        # 检查图形
+        # 检查位图图形
         for figure in page.pdf_figure:
             if figure.box.y2 < current_box.y and not (
                 figure.box.x >= current_box.x2 or figure.box.x2 <= current_box.x
             ):
                 min_y = max(min_y, figure.box.y2)
+
+        # 检查非正文版面元素（如表格、插图、公式、图表、印章等）
+        for layout in getattr(page, "page_layout", []):
+            if layout.box is None:
+                continue
+            if layout.class_name in (
+                "table",
+                "figure",
+                "isolate_formula",
+                "formula",
+                "chart",
+                "seal",
+            ):
+                if layout.box.y2 < current_box.y and not (
+                    layout.box.x >= current_box.x2 or layout.box.x2 <= current_box.x
+                ):
+                    min_y = max(min_y, layout.box.y2)
+
+        # 检查矢量线条与曲线（如田字格、表格边框、分割线等）
+        for curve in getattr(page, "pdf_curve", []):
+            if curve.box is None:
+                continue
+            if curve.box.y2 < current_box.y and not (
+                curve.box.x >= current_box.x2 or curve.box.x2 <= current_box.x
+            ):
+                min_y = max(min_y, curve.box.y2)
+
+        # 检查矢量矩形（排除底色背景矩形与调试框）
+        for rect in getattr(page, "pdf_rectangle", []):
+            if (
+                rect.box is None
+                or getattr(rect, "fill_background", False)
+                or getattr(rect, "debug_info", False)
+            ):
+                continue
+            if rect.box.y2 < current_box.y and not (
+                rect.box.x >= current_box.x2 or rect.box.x2 <= current_box.x
+            ):
+                min_y = max(min_y, rect.box.y2)
 
         return min_y
 
