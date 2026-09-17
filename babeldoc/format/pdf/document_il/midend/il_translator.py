@@ -139,6 +139,10 @@ class PbarContext:
 
     def __exit__(self, exc_type, exc_value, traceback):
         self.pbar.advance()
+        if hasattr(self.pbar, "current") and hasattr(self.pbar, "total") and self.pbar.total > 0:
+            interval = 1 if self.pbar.total <= 50 else max(1, self.pbar.total // 50)
+            if self.pbar.current % interval == 0 or self.pbar.current >= self.pbar.total:
+                logger.info(f"Translate Paragraphs: {self.pbar.current}/{self.pbar.total}")
 
 
 class DocumentTranslateTracker:

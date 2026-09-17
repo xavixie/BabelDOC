@@ -353,6 +353,10 @@ class AutomaticTermExtractor:
             return
         finally:
             pbar.advance(len(paragraphs.paragraphs))
+            if hasattr(pbar, "current") and hasattr(pbar, "total") and pbar.total > 0:
+                interval = 1 if pbar.total <= 50 else max(1, pbar.total // 50)
+                if pbar.current % interval == 0 or pbar.current >= pbar.total:
+                    logger.info(f"Automatic Term Extraction: {pbar.current}/{pbar.total}")
 
     def procress(self, doc_il: ILDocument):
         logger.info(f"{self.stage_name}: Starting term extraction for document.")
